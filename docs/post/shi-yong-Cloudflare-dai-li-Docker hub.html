@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html data-color-mode="light" data-dark-theme="dark" data-light-theme="light" lang="zh-CN">
+<head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <link href="//cdn.staticfile.net/Primer/21.0.7/primer.css" rel="stylesheet" />
+    <link rel="icon" href="https://avatars.githubusercontent.com/u/10243912?v=4"><script>
+        let theme = localStorage.getItem("meek_theme") || "light";
+        document.documentElement.setAttribute("data-color-mode", theme);
+    </script>
+<meta name="description" content="由于国内的一些dockerhub镜像下线，导致无法访问，参考 [https://global.v2ex.com/t/1007922](https://global.v2ex.com/t/1007922) 成功使用cloudflare进行代理
+
+
+```js
+'use strict'
+
+const hub_host = 'registry-1.docker.io'
+const auth_url = 'https://auth.docker.io'
+const workers_url = 'https://dh.tiga210.eu.org'
+/**
+ * static files (404.html, sw.js, conf.js)
+ */
+
+/** @type {RequestInit} */
+const PREFLIGHT_INIT = {
+// status: 204,
+    headers: new Headers({
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
+        'access-control-max-age': '1728000',
+    }),
+}
+
+/**
+ * @param {any} body
+ * @param {number} status
+ * @param {Object<string, string>} headers
+ */
+function makeRes(body, status = 200, headers = {}) {
+    headers['access-control-allow-origin'] = '*'
+    return new Response(body, {status, headers})
+}
+
+
+/**
+ * @param {string} urlStr
+ */
+function newUrl(urlStr) {
+    try {
+        return new URL(urlStr)
+    } catch (err) {
+        return null
+    }
+}
+
+
+addEventListener('fetch', e => {
+    const ret = fetchHandler(e)
+        .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
+    e.respondWith(ret)
+})
+
+
+/**
+ * @param {FetchEvent} e
+ */
+async function fetchHandler(e) {
+    const getReqHeader = (key) => e.request.headers.get(key);
+
+    let url = new URL(e.request.url);
+
+    // 修改 pre head get 请求
+    // 是否含有 %2F ，用于判断是否具有用户名与仓库名之间的连接符
+    // 同时检查 %3A 的存在
+    if (!/%2F/.test(url.search) && /%3A/.test(url.toString())) {
+        let modifiedUrl = url.toString().replace(/%3A(?=.*?&)/, '%3Alibrary%2F');
+        url = new URL(modifiedUrl);
+        console.log(`handle_url: ${url}`)
+    }
+
+    if (url.pathname === '/token') {
+        let token_parameter = {
+            headers: {
+                'Host': 'auth.docker.io',
+                'User-Agent': getReqHeader('User-Agent'),
+                'Accept': getReqHeader('Accept'),
+                'Accept-Language': getReqHeader('Accept-Language'),
+                'Accept-Encoding': getReqHeader('Accept-Encoding'),
+                'Connection': 'keep-alive',
+                'Cache-Control': 'max-age=0'
+            }
+        };
+        let token_url = auth_url + url.pathname + url.search
+        return fetch(new Request(token_url, e.request), token_parameter)
+    }
+
+// 修改 head 请求
+    if (/^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && !/^\/v2\/library/.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/\/v2\//, '/v2/library/');
+        console.log(`modified_url: ${url.pathname}`)
+    }
+
+    url.hostname = hub_host;
+
+    let parameter = {
+        headers: {
+            'Host': hub_host,
+            'User-Agent': getReqHeader('User-Agent'),
+            'Accept': getReqHeader('Accept'),
+            'Accept-Language': getReqHeader('Accept-Language'),
+            'Accept-Encoding': getReqHeader('Accept-Encoding'),
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0'
+        },
+        cacheTtl: 3600
+    };
+
+    if (e.request.headers.has('Authorization')) {
+        parameter.headers.Authorization = getReqHeader('Authorization');
+    }
+
+    let original_response = await fetch(new Request(url, e.request), parameter)
+    let original_response_clone = original_response.clone();
+    let original_text = original_response_clone.body;
+    let response_headers = original_response.headers;
+    let new_response_headers = new Headers(response_headers);
+    let status = original_response.status;
+
+    if (new_response_headers.get('Www-Authenticate')) {
+        let auth = new_response_headers.get('Www-Authenticate');
+        let re = new RegExp(auth_url, 'g');
+        new_response_headers.set('Www-Authenticate', response_headers.get('Www-Authenticate').replace(re, workers_url));
+    }
+
+    if (new_response_headers.get('Location')) {
+        return httpHandler(e.request, new_response_headers.get('Location'))
+    }
+
+    let response = new Response(original_text, {
+        status,
+        headers: new_response_headers
+    })
+    return response;
+
+}
+
+
+/**
+ * @param {Request} req
+ * @param {string} pathname
+ */
+function httpHandler(req, pathname) {
+    const reqHdrRaw = req.headers
+
+    // preflight
+    if (req.method === 'OPTIONS' &&
+        reqHdrRaw.has('access-control-request-headers')
+    ) {
+        return new Response(null, PREFLIGHT_INIT)
+    }
+
+    let rawLen = ''
+
+    const reqHdrNew = new Headers(reqHdrRaw)
+
+    const refer = reqHdrNew.get('referer')
+
+    let urlStr = pathname
+
+    const urlObj = newUrl(urlStr)
+
+    /** @type {RequestInit} */
+    const reqInit = {
+        method: req.method,
+        headers: reqHdrNew,
+        redirect: 'follow',
+        body: req.body
+    }
+    return proxy(urlObj, reqInit, rawLen)
+}
+
+
+/**
+ *
+ * @param {URL} urlObj
+ * @param {RequestInit} reqInit
+ */
+async function proxy(urlObj, reqInit, rawLen) {
+    const res = await fetch(urlObj.href, reqInit)
+    const resHdrOld = res.headers
+    const resHdrNew = new Headers(resHdrOld)
+
+    // verify
+    if (rawLen) {
+        const newLen = resHdrOld.get('content-length') || ''
+        const badLen = (rawLen !== newLen)
+
+        if (badLen) {
+            return makeRes(res.body, 400, {
+                '--error': `bad len: ${newLen}, except: ${rawLen}`,
+                'access-control-expose-headers': '--error',
+            })
+        }
+    }
+    const status = res.status
+    resHdrNew.set('access-control-expose-headers', '*')
+    resHdrNew.set('access-control-allow-origin', '*')
+    resHdrNew.set('Cache-Control', 'max-age=1500')
+
+    resHdrNew.delete('content-security-policy')
+    resHdrNew.delete('content-security-policy-report-only')
+    resHdrNew.delete('clear-site-data')
+
+    return new Response(res.body, {
+        status,
+        headers: resHdrNew
+    })
+}
+
+```。">
+<meta property="og:title" content="使用Cloudflare代理Docker hub">
+<meta property="og:description" content="由于国内的一些dockerhub镜像下线，导致无法访问，参考 [https://global.v2ex.com/t/1007922](https://global.v2ex.com/t/1007922) 成功使用cloudflare进行代理
+
+
+```js
+'use strict'
+
+const hub_host = 'registry-1.docker.io'
+const auth_url = 'https://auth.docker.io'
+const workers_url = 'https://dh.tiga210.eu.org'
+/**
+ * static files (404.html, sw.js, conf.js)
+ */
+
+/** @type {RequestInit} */
+const PREFLIGHT_INIT = {
+// status: 204,
+    headers: new Headers({
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
+        'access-control-max-age': '1728000',
+    }),
+}
+
+/**
+ * @param {any} body
+ * @param {number} status
+ * @param {Object<string, string>} headers
+ */
+function makeRes(body, status = 200, headers = {}) {
+    headers['access-control-allow-origin'] = '*'
+    return new Response(body, {status, headers})
+}
+
+
+/**
+ * @param {string} urlStr
+ */
+function newUrl(urlStr) {
+    try {
+        return new URL(urlStr)
+    } catch (err) {
+        return null
+    }
+}
+
+
+addEventListener('fetch', e => {
+    const ret = fetchHandler(e)
+        .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
+    e.respondWith(ret)
+})
+
+
+/**
+ * @param {FetchEvent} e
+ */
+async function fetchHandler(e) {
+    const getReqHeader = (key) => e.request.headers.get(key);
+
+    let url = new URL(e.request.url);
+
+    // 修改 pre head get 请求
+    // 是否含有 %2F ，用于判断是否具有用户名与仓库名之间的连接符
+    // 同时检查 %3A 的存在
+    if (!/%2F/.test(url.search) && /%3A/.test(url.toString())) {
+        let modifiedUrl = url.toString().replace(/%3A(?=.*?&)/, '%3Alibrary%2F');
+        url = new URL(modifiedUrl);
+        console.log(`handle_url: ${url}`)
+    }
+
+    if (url.pathname === '/token') {
+        let token_parameter = {
+            headers: {
+                'Host': 'auth.docker.io',
+                'User-Agent': getReqHeader('User-Agent'),
+                'Accept': getReqHeader('Accept'),
+                'Accept-Language': getReqHeader('Accept-Language'),
+                'Accept-Encoding': getReqHeader('Accept-Encoding'),
+                'Connection': 'keep-alive',
+                'Cache-Control': 'max-age=0'
+            }
+        };
+        let token_url = auth_url + url.pathname + url.search
+        return fetch(new Request(token_url, e.request), token_parameter)
+    }
+
+// 修改 head 请求
+    if (/^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && !/^\/v2\/library/.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/\/v2\//, '/v2/library/');
+        console.log(`modified_url: ${url.pathname}`)
+    }
+
+    url.hostname = hub_host;
+
+    let parameter = {
+        headers: {
+            'Host': hub_host,
+            'User-Agent': getReqHeader('User-Agent'),
+            'Accept': getReqHeader('Accept'),
+            'Accept-Language': getReqHeader('Accept-Language'),
+            'Accept-Encoding': getReqHeader('Accept-Encoding'),
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0'
+        },
+        cacheTtl: 3600
+    };
+
+    if (e.request.headers.has('Authorization')) {
+        parameter.headers.Authorization = getReqHeader('Authorization');
+    }
+
+    let original_response = await fetch(new Request(url, e.request), parameter)
+    let original_response_clone = original_response.clone();
+    let original_text = original_response_clone.body;
+    let response_headers = original_response.headers;
+    let new_response_headers = new Headers(response_headers);
+    let status = original_response.status;
+
+    if (new_response_headers.get('Www-Authenticate')) {
+        let auth = new_response_headers.get('Www-Authenticate');
+        let re = new RegExp(auth_url, 'g');
+        new_response_headers.set('Www-Authenticate', response_headers.get('Www-Authenticate').replace(re, workers_url));
+    }
+
+    if (new_response_headers.get('Location')) {
+        return httpHandler(e.request, new_response_headers.get('Location'))
+    }
+
+    let response = new Response(original_text, {
+        status,
+        headers: new_response_headers
+    })
+    return response;
+
+}
+
+
+/**
+ * @param {Request} req
+ * @param {string} pathname
+ */
+function httpHandler(req, pathname) {
+    const reqHdrRaw = req.headers
+
+    // preflight
+    if (req.method === 'OPTIONS' &&
+        reqHdrRaw.has('access-control-request-headers')
+    ) {
+        return new Response(null, PREFLIGHT_INIT)
+    }
+
+    let rawLen = ''
+
+    const reqHdrNew = new Headers(reqHdrRaw)
+
+    const refer = reqHdrNew.get('referer')
+
+    let urlStr = pathname
+
+    const urlObj = newUrl(urlStr)
+
+    /** @type {RequestInit} */
+    const reqInit = {
+        method: req.method,
+        headers: reqHdrNew,
+        redirect: 'follow',
+        body: req.body
+    }
+    return proxy(urlObj, reqInit, rawLen)
+}
+
+
+/**
+ *
+ * @param {URL} urlObj
+ * @param {RequestInit} reqInit
+ */
+async function proxy(urlObj, reqInit, rawLen) {
+    const res = await fetch(urlObj.href, reqInit)
+    const resHdrOld = res.headers
+    const resHdrNew = new Headers(resHdrOld)
+
+    // verify
+    if (rawLen) {
+        const newLen = resHdrOld.get('content-length') || ''
+        const badLen = (rawLen !== newLen)
+
+        if (badLen) {
+            return makeRes(res.body, 400, {
+                '--error': `bad len: ${newLen}, except: ${rawLen}`,
+                'access-control-expose-headers': '--error',
+            })
+        }
+    }
+    const status = res.status
+    resHdrNew.set('access-control-expose-headers', '*')
+    resHdrNew.set('access-control-allow-origin', '*')
+    resHdrNew.set('Cache-Control', 'max-age=1500')
+
+    resHdrNew.delete('content-security-policy')
+    resHdrNew.delete('content-security-policy-report-only')
+    resHdrNew.delete('clear-site-data')
+
+    return new Response(res.body, {
+        status,
+        headers: resHdrNew
+    })
+}
+
+```。">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://tiga210.github.io/post/shi-yong-Cloudflare-dai-li-Docker%20hub.html">
+<meta property="og:image" content="https://avatars.githubusercontent.com/u/10243912?v=4">
+<title>使用Cloudflare代理Docker hub</title>
+<link href="//unpkg.com/@wooorm/starry-night@2.1.1/style/both.css" rel="stylesheet" />
+
+</head>
+<style>
+body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;padding: 45px;font-size: 16px;font-family: sans-serif;line-height: 1.25;}
+#header{display:flex;padding-bottom:8px;border-bottom: 1px solid var(--borderColor-muted, var(--color-border-muted));margin-bottom: 16px;}
+#footer {margin-top:64px; text-align: center;font-size: small;}
+
+</style>
+
+<style>
+.postTitle{margin: auto 0;font-size:40px;font-weight:bold;}
+.title-right{display:flex;margin:auto 0 0 auto;}
+.title-right .circle{padding: 14px 16px;margin-right:8px;}
+#postBody{border-bottom: 1px solid var(--color-border-default);padding-bottom:36px;}
+#postBody hr{height:2px;}
+#cmButton{height:48px;margin-top:48px;}
+#comments{margin-top:64px;}
+.g-emoji{font-size:24px;}
+@media (max-width: 600px) {
+    body {padding: 8px;}
+    .postTitle{font-size:24px;}
+}
+</style>
+
+
+
+
+<body>
+    <div id="header">
+<h1 class="postTitle">使用Cloudflare代理Docker hub</h1>
+<div class="title-right">
+    <a href="https://tiga210.github.io" id="buttonHome" class="btn btn-invisible circle" title="首页">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathHome" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+    <a href="https://github.com/tiga210/tiga210.github.io/issues/7" target="_blank" class="btn btn-invisible circle" title="Issue">
+        <svg class="octicon" width="16" height="16">
+            <path id="pathIssue" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+    
+
+    <a class="btn btn-invisible circle" onclick="modeSwitch();" title="切换主题">
+        <svg class="octicon" width="16" height="16" >
+            <path id="themeSwitch" fill-rule="evenodd"></path>
+        </svg>
+    </a>
+
+</div>
+</div>
+    <div id="content">
+<div class="markdown-body" id="postBody"><p>由于国内的一些dockerhub镜像下线，导致无法访问，参考 <a href="https://global.v2ex.com/t/1007922" rel="nofollow">https://global.v2ex.com/t/1007922</a> 成功使用cloudflare进行代理</p>
+<div class="highlight highlight-source-js"><pre class="notranslate"><span class="pl-s">'use strict'</span>
+
+<span class="pl-k">const</span> <span class="pl-s1">hub_host</span> <span class="pl-c1">=</span> <span class="pl-s">'registry-1.docker.io'</span>
+<span class="pl-k">const</span> <span class="pl-s1">auth_url</span> <span class="pl-c1">=</span> <span class="pl-s">'https://auth.docker.io'</span>
+<span class="pl-k">const</span> <span class="pl-s1">workers_url</span> <span class="pl-c1">=</span> <span class="pl-s">'https://dh.tiga210.eu.org'</span>
+<span class="pl-c">/**</span>
+<span class="pl-c"> * static files (404.html, sw.js, conf.js)</span>
+<span class="pl-c"> */</span>
+
+<span class="pl-c">/** @type {RequestInit} */</span>
+<span class="pl-k">const</span> <span class="pl-c1">PREFLIGHT_INIT</span> <span class="pl-c1">=</span> <span class="pl-kos">{</span>
+<span class="pl-c">// status: 204,</span>
+    <span class="pl-c1">headers</span>: <span class="pl-k">new</span> <span class="pl-v">Headers</span><span class="pl-kos">(</span><span class="pl-kos">{</span>
+        <span class="pl-s">'access-control-allow-origin'</span>: <span class="pl-s">'*'</span><span class="pl-kos">,</span>
+        <span class="pl-s">'access-control-allow-methods'</span>: <span class="pl-s">'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS'</span><span class="pl-kos">,</span>
+        <span class="pl-s">'access-control-max-age'</span>: <span class="pl-s">'1728000'</span><span class="pl-kos">,</span>
+    <span class="pl-kos">}</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+<span class="pl-kos">}</span>
+
+<span class="pl-c">/**</span>
+<span class="pl-c"> * @param {any} body</span>
+<span class="pl-c"> * @param {number} status</span>
+<span class="pl-c"> * @param {Object&lt;string, string&gt;} headers</span>
+<span class="pl-c"> */</span>
+<span class="pl-k">function</span> <span class="pl-en">makeRes</span><span class="pl-kos">(</span><span class="pl-s1">body</span><span class="pl-kos">,</span> <span class="pl-s1">status</span> <span class="pl-c1">=</span> <span class="pl-c1">200</span><span class="pl-kos">,</span> <span class="pl-s1">headers</span> <span class="pl-c1">=</span> <span class="pl-kos">{</span><span class="pl-kos">}</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+    <span class="pl-s1">headers</span><span class="pl-kos">[</span><span class="pl-s">'access-control-allow-origin'</span><span class="pl-kos">]</span> <span class="pl-c1">=</span> <span class="pl-s">'*'</span>
+    <span class="pl-k">return</span> <span class="pl-k">new</span> <span class="pl-v">Response</span><span class="pl-kos">(</span><span class="pl-s1">body</span><span class="pl-kos">,</span> <span class="pl-kos">{</span>status<span class="pl-kos">,</span> headers<span class="pl-kos">}</span><span class="pl-kos">)</span>
+<span class="pl-kos">}</span>
+
+
+<span class="pl-c">/**</span>
+<span class="pl-c"> * @param {string} urlStr</span>
+<span class="pl-c"> */</span>
+<span class="pl-k">function</span> <span class="pl-en">newUrl</span><span class="pl-kos">(</span><span class="pl-s1">urlStr</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+    <span class="pl-k">try</span> <span class="pl-kos">{</span>
+        <span class="pl-k">return</span> <span class="pl-k">new</span> <span class="pl-c1">URL</span><span class="pl-kos">(</span><span class="pl-s1">urlStr</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span> <span class="pl-k">catch</span> <span class="pl-kos">(</span><span class="pl-s1">err</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">return</span> <span class="pl-c1">null</span>
+    <span class="pl-kos">}</span>
+<span class="pl-kos">}</span>
+
+
+<span class="pl-en">addEventListener</span><span class="pl-kos">(</span><span class="pl-s">'fetch'</span><span class="pl-kos">,</span> <span class="pl-s1">e</span> <span class="pl-c1">=&gt;</span> <span class="pl-kos">{</span>
+    <span class="pl-k">const</span> <span class="pl-s1">ret</span> <span class="pl-c1">=</span> <span class="pl-en">fetchHandler</span><span class="pl-kos">(</span><span class="pl-s1">e</span><span class="pl-kos">)</span>
+        <span class="pl-kos">.</span><span class="pl-en">catch</span><span class="pl-kos">(</span><span class="pl-s1">err</span> <span class="pl-c1">=&gt;</span> <span class="pl-en">makeRes</span><span class="pl-kos">(</span><span class="pl-s">'cfworker error:\n'</span> <span class="pl-c1">+</span> <span class="pl-s1">err</span><span class="pl-kos">.</span><span class="pl-c1">stack</span><span class="pl-kos">,</span> <span class="pl-c1">502</span><span class="pl-kos">)</span><span class="pl-kos">)</span>
+    <span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-en">respondWith</span><span class="pl-kos">(</span><span class="pl-s1">ret</span><span class="pl-kos">)</span>
+<span class="pl-kos">}</span><span class="pl-kos">)</span>
+
+
+<span class="pl-c">/**</span>
+<span class="pl-c"> * @param {FetchEvent} e</span>
+<span class="pl-c"> */</span>
+<span class="pl-k">async</span> <span class="pl-k">function</span> <span class="pl-en">fetchHandler</span><span class="pl-kos">(</span><span class="pl-s1">e</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+    <span class="pl-k">const</span> <span class="pl-en">getReqHeader</span> <span class="pl-c1">=</span> <span class="pl-kos">(</span><span class="pl-s1">key</span><span class="pl-kos">)</span> <span class="pl-c1">=&gt;</span> <span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">.</span><span class="pl-c1">headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s1">key</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">url</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-c1">URL</span><span class="pl-kos">(</span><span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">.</span><span class="pl-c1">url</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+
+    <span class="pl-c">// 修改 pre head get 请求</span>
+    <span class="pl-c">// 是否含有 %2F ，用于判断是否具有用户名与仓库名之间的连接符</span>
+    <span class="pl-c">// 同时检查 %3A 的存在</span>
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-c1">!</span><span class="pl-pds"><span class="pl-c1">/</span>%2F<span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">search</span><span class="pl-kos">)</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-pds"><span class="pl-c1">/</span>%3A<span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-en">toString</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">let</span> <span class="pl-s1">modifiedUrl</span> <span class="pl-c1">=</span> <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-en">toString</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">replace</span><span class="pl-kos">(</span><span class="pl-pds"><span class="pl-c1">/</span>%3A(?=.*?&amp;)<span class="pl-c1">/</span></span><span class="pl-kos">,</span> <span class="pl-s">'%3Alibrary%2F'</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-s1">url</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-c1">URL</span><span class="pl-kos">(</span><span class="pl-s1">modifiedUrl</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-smi">console</span><span class="pl-kos">.</span><span class="pl-en">log</span><span class="pl-kos">(</span><span class="pl-s">`handle_url: <span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">url</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span> <span class="pl-c1">===</span> <span class="pl-s">'/token'</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">let</span> <span class="pl-s1">token_parameter</span> <span class="pl-c1">=</span> <span class="pl-kos">{</span>
+            <span class="pl-c1">headers</span>: <span class="pl-kos">{</span>
+                <span class="pl-s">'Host'</span>: <span class="pl-s">'auth.docker.io'</span><span class="pl-kos">,</span>
+                <span class="pl-s">'User-Agent'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"User-Agent"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+                <span class="pl-s">'Accept'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+                <span class="pl-s">'Accept-Language'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept-Language"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+                <span class="pl-s">'Accept-Encoding'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept-Encoding"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+                <span class="pl-s">'Connection'</span>: <span class="pl-s">'keep-alive'</span><span class="pl-kos">,</span>
+                <span class="pl-s">'Cache-Control'</span>: <span class="pl-s">'max-age=0'</span>
+            <span class="pl-kos">}</span>
+        <span class="pl-kos">}</span><span class="pl-kos">;</span>
+        <span class="pl-k">let</span> <span class="pl-s1">token_url</span> <span class="pl-c1">=</span> <span class="pl-s1">auth_url</span> <span class="pl-c1">+</span> <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span> <span class="pl-c1">+</span> <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">search</span>
+        <span class="pl-k">return</span> <span class="pl-en">fetch</span><span class="pl-kos">(</span><span class="pl-k">new</span> <span class="pl-v">Request</span><span class="pl-kos">(</span><span class="pl-s1">token_url</span><span class="pl-kos">,</span> <span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s1">token_parameter</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span>
+
+<span class="pl-c">// 修改 head 请求</span>
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-pds"><span class="pl-c1">/</span>^\/v2\/[^/]+\/[^/]+\/[^/]+$<span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span><span class="pl-kos">)</span> <span class="pl-c1">&amp;&amp;</span> <span class="pl-c1">!</span><span class="pl-pds"><span class="pl-c1">/</span>^\/v2\/library<span class="pl-c1">/</span></span><span class="pl-kos">.</span><span class="pl-en">test</span><span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span> <span class="pl-c1">=</span> <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span><span class="pl-kos">.</span><span class="pl-en">replace</span><span class="pl-kos">(</span><span class="pl-pds"><span class="pl-c1">/</span>\/v2\/<span class="pl-c1">/</span></span><span class="pl-kos">,</span> <span class="pl-s">'/v2/library/'</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-smi">console</span><span class="pl-kos">.</span><span class="pl-en">log</span><span class="pl-kos">(</span><span class="pl-s">`modified_url: <span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">pathname</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-s1">url</span><span class="pl-kos">.</span><span class="pl-c1">hostname</span> <span class="pl-c1">=</span> <span class="pl-s1">hub_host</span><span class="pl-kos">;</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">parameter</span> <span class="pl-c1">=</span> <span class="pl-kos">{</span>
+        <span class="pl-c1">headers</span>: <span class="pl-kos">{</span>
+            <span class="pl-s">'Host'</span>: <span class="pl-s1">hub_host</span><span class="pl-kos">,</span>
+            <span class="pl-s">'User-Agent'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"User-Agent"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+            <span class="pl-s">'Accept'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+            <span class="pl-s">'Accept-Language'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept-Language"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+            <span class="pl-s">'Accept-Encoding'</span>: <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Accept-Encoding"</span><span class="pl-kos">)</span><span class="pl-kos">,</span>
+            <span class="pl-s">'Connection'</span>: <span class="pl-s">'keep-alive'</span><span class="pl-kos">,</span>
+            <span class="pl-s">'Cache-Control'</span>: <span class="pl-s">'max-age=0'</span>
+        <span class="pl-kos">}</span><span class="pl-kos">,</span>
+        <span class="pl-c1">cacheTtl</span>: <span class="pl-c1">3600</span>
+    <span class="pl-kos">}</span><span class="pl-kos">;</span>
+
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">.</span><span class="pl-c1">headers</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s">"Authorization"</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-s1">parameter</span><span class="pl-kos">.</span><span class="pl-c1">headers</span><span class="pl-kos">.</span><span class="pl-c1">Authorization</span> <span class="pl-c1">=</span> <span class="pl-en">getReqHeader</span><span class="pl-kos">(</span><span class="pl-s">"Authorization"</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">original_response</span> <span class="pl-c1">=</span> <span class="pl-k">await</span> <span class="pl-en">fetch</span><span class="pl-kos">(</span><span class="pl-k">new</span> <span class="pl-v">Request</span><span class="pl-kos">(</span><span class="pl-s1">url</span><span class="pl-kos">,</span> <span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">)</span><span class="pl-kos">,</span> <span class="pl-s1">parameter</span><span class="pl-kos">)</span>
+    <span class="pl-k">let</span> <span class="pl-s1">original_response_clone</span> <span class="pl-c1">=</span> <span class="pl-s1">original_response</span><span class="pl-kos">.</span><span class="pl-en">clone</span><span class="pl-kos">(</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+    <span class="pl-k">let</span> <span class="pl-s1">original_text</span> <span class="pl-c1">=</span> <span class="pl-s1">original_response_clone</span><span class="pl-kos">.</span><span class="pl-c1">body</span><span class="pl-kos">;</span>
+    <span class="pl-k">let</span> <span class="pl-s1">response_headers</span> <span class="pl-c1">=</span> <span class="pl-s1">original_response</span><span class="pl-kos">.</span><span class="pl-c1">headers</span><span class="pl-kos">;</span>
+    <span class="pl-k">let</span> <span class="pl-s1">new_response_headers</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Headers</span><span class="pl-kos">(</span><span class="pl-s1">response_headers</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+    <span class="pl-k">let</span> <span class="pl-s1">status</span> <span class="pl-c1">=</span> <span class="pl-s1">original_response</span><span class="pl-kos">.</span><span class="pl-c1">status</span><span class="pl-kos">;</span>
+
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">new_response_headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">"Www-Authenticate"</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">let</span> <span class="pl-s1">auth</span> <span class="pl-c1">=</span> <span class="pl-s1">new_response_headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">"Www-Authenticate"</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-k">let</span> <span class="pl-s1">re</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">RegExp</span><span class="pl-kos">(</span><span class="pl-s1">auth_url</span><span class="pl-kos">,</span> <span class="pl-s">'g'</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+        <span class="pl-s1">new_response_headers</span><span class="pl-kos">.</span><span class="pl-en">set</span><span class="pl-kos">(</span><span class="pl-s">"Www-Authenticate"</span><span class="pl-kos">,</span> <span class="pl-s1">response_headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">"Www-Authenticate"</span><span class="pl-kos">)</span><span class="pl-kos">.</span><span class="pl-en">replace</span><span class="pl-kos">(</span><span class="pl-s1">re</span><span class="pl-kos">,</span> <span class="pl-s1">workers_url</span><span class="pl-kos">)</span><span class="pl-kos">)</span><span class="pl-kos">;</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">new_response_headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">"Location"</span><span class="pl-kos">)</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">return</span> <span class="pl-en">httpHandler</span><span class="pl-kos">(</span><span class="pl-s1">e</span><span class="pl-kos">.</span><span class="pl-c1">request</span><span class="pl-kos">,</span> <span class="pl-s1">new_response_headers</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">"Location"</span><span class="pl-kos">)</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">response</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Response</span><span class="pl-kos">(</span><span class="pl-s1">original_text</span><span class="pl-kos">,</span> <span class="pl-kos">{</span>
+        status<span class="pl-kos">,</span>
+        <span class="pl-c1">headers</span>: <span class="pl-s1">new_response_headers</span>
+    <span class="pl-kos">}</span><span class="pl-kos">)</span>
+    <span class="pl-k">return</span> <span class="pl-s1">response</span><span class="pl-kos">;</span>
+
+<span class="pl-kos">}</span>
+
+
+<span class="pl-c">/**</span>
+<span class="pl-c"> * @param {Request} req</span>
+<span class="pl-c"> * @param {string} pathname</span>
+<span class="pl-c"> */</span>
+<span class="pl-k">function</span> <span class="pl-en">httpHandler</span><span class="pl-kos">(</span><span class="pl-s1">req</span><span class="pl-kos">,</span> <span class="pl-s1">pathname</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+    <span class="pl-k">const</span> <span class="pl-s1">reqHdrRaw</span> <span class="pl-c1">=</span> <span class="pl-s1">req</span><span class="pl-kos">.</span><span class="pl-c1">headers</span>
+
+    <span class="pl-c">// preflight</span>
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">req</span><span class="pl-kos">.</span><span class="pl-c1">method</span> <span class="pl-c1">===</span> <span class="pl-s">'OPTIONS'</span> <span class="pl-c1">&amp;&amp;</span>
+        <span class="pl-s1">reqHdrRaw</span><span class="pl-kos">.</span><span class="pl-en">has</span><span class="pl-kos">(</span><span class="pl-s">'access-control-request-headers'</span><span class="pl-kos">)</span>
+    <span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">return</span> <span class="pl-k">new</span> <span class="pl-v">Response</span><span class="pl-kos">(</span><span class="pl-c1">null</span><span class="pl-kos">,</span> <span class="pl-c1">PREFLIGHT_INIT</span><span class="pl-kos">)</span>
+    <span class="pl-kos">}</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">rawLen</span> <span class="pl-c1">=</span> <span class="pl-s">''</span>
+
+    <span class="pl-k">const</span> <span class="pl-s1">reqHdrNew</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Headers</span><span class="pl-kos">(</span><span class="pl-s1">reqHdrRaw</span><span class="pl-kos">)</span>
+
+    <span class="pl-k">const</span> <span class="pl-s1">refer</span> <span class="pl-c1">=</span> <span class="pl-s1">reqHdrNew</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">'referer'</span><span class="pl-kos">)</span>
+
+    <span class="pl-k">let</span> <span class="pl-s1">urlStr</span> <span class="pl-c1">=</span> <span class="pl-s1">pathname</span>
+
+    <span class="pl-k">const</span> <span class="pl-s1">urlObj</span> <span class="pl-c1">=</span> <span class="pl-en">newUrl</span><span class="pl-kos">(</span><span class="pl-s1">urlStr</span><span class="pl-kos">)</span>
+
+    <span class="pl-c">/** @type {RequestInit} */</span>
+    <span class="pl-k">const</span> <span class="pl-s1">reqInit</span> <span class="pl-c1">=</span> <span class="pl-kos">{</span>
+        <span class="pl-c1">method</span>: <span class="pl-s1">req</span><span class="pl-kos">.</span><span class="pl-c1">method</span><span class="pl-kos">,</span>
+        <span class="pl-c1">headers</span>: <span class="pl-s1">reqHdrNew</span><span class="pl-kos">,</span>
+        <span class="pl-c1">redirect</span>: <span class="pl-s">'follow'</span><span class="pl-kos">,</span>
+        <span class="pl-c1">body</span>: <span class="pl-s1">req</span><span class="pl-kos">.</span><span class="pl-c1">body</span>
+    <span class="pl-kos">}</span>
+    <span class="pl-k">return</span> <span class="pl-en">proxy</span><span class="pl-kos">(</span><span class="pl-s1">urlObj</span><span class="pl-kos">,</span> <span class="pl-s1">reqInit</span><span class="pl-kos">,</span> <span class="pl-s1">rawLen</span><span class="pl-kos">)</span>
+<span class="pl-kos">}</span>
+
+
+<span class="pl-c">/**</span>
+<span class="pl-c"> *</span>
+<span class="pl-c"> * @param {URL} urlObj</span>
+<span class="pl-c"> * @param {RequestInit} reqInit</span>
+<span class="pl-c"> */</span>
+<span class="pl-k">async</span> <span class="pl-k">function</span> <span class="pl-en">proxy</span><span class="pl-kos">(</span><span class="pl-s1">urlObj</span><span class="pl-kos">,</span> <span class="pl-s1">reqInit</span><span class="pl-kos">,</span> <span class="pl-s1">rawLen</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+    <span class="pl-k">const</span> <span class="pl-s1">res</span> <span class="pl-c1">=</span> <span class="pl-k">await</span> <span class="pl-en">fetch</span><span class="pl-kos">(</span><span class="pl-s1">urlObj</span><span class="pl-kos">.</span><span class="pl-c1">href</span><span class="pl-kos">,</span> <span class="pl-s1">reqInit</span><span class="pl-kos">)</span>
+    <span class="pl-k">const</span> <span class="pl-s1">resHdrOld</span> <span class="pl-c1">=</span> <span class="pl-s1">res</span><span class="pl-kos">.</span><span class="pl-c1">headers</span>
+    <span class="pl-k">const</span> <span class="pl-s1">resHdrNew</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-v">Headers</span><span class="pl-kos">(</span><span class="pl-s1">resHdrOld</span><span class="pl-kos">)</span>
+
+    <span class="pl-c">// verify</span>
+    <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">rawLen</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+        <span class="pl-k">const</span> <span class="pl-s1">newLen</span> <span class="pl-c1">=</span> <span class="pl-s1">resHdrOld</span><span class="pl-kos">.</span><span class="pl-en">get</span><span class="pl-kos">(</span><span class="pl-s">'content-length'</span><span class="pl-kos">)</span> <span class="pl-c1">||</span> <span class="pl-s">''</span>
+        <span class="pl-k">const</span> <span class="pl-s1">badLen</span> <span class="pl-c1">=</span> <span class="pl-kos">(</span><span class="pl-s1">rawLen</span> <span class="pl-c1">!==</span> <span class="pl-s1">newLen</span><span class="pl-kos">)</span>
+
+        <span class="pl-k">if</span> <span class="pl-kos">(</span><span class="pl-s1">badLen</span><span class="pl-kos">)</span> <span class="pl-kos">{</span>
+            <span class="pl-k">return</span> <span class="pl-en">makeRes</span><span class="pl-kos">(</span><span class="pl-s1">res</span><span class="pl-kos">.</span><span class="pl-c1">body</span><span class="pl-kos">,</span> <span class="pl-c1">400</span><span class="pl-kos">,</span> <span class="pl-kos">{</span>
+                <span class="pl-s">'--error'</span>: <span class="pl-s">`bad len: <span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">newLen</span><span class="pl-kos">}</span></span>, except: <span class="pl-s1"><span class="pl-kos">${</span><span class="pl-s1">rawLen</span><span class="pl-kos">}</span></span>`</span><span class="pl-kos">,</span>
+                <span class="pl-s">'access-control-expose-headers'</span>: <span class="pl-s">'--error'</span><span class="pl-kos">,</span>
+            <span class="pl-kos">}</span><span class="pl-kos">)</span>
+        <span class="pl-kos">}</span>
+    <span class="pl-kos">}</span>
+    <span class="pl-k">const</span> <span class="pl-s1">status</span> <span class="pl-c1">=</span> <span class="pl-s1">res</span><span class="pl-kos">.</span><span class="pl-c1">status</span>
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">set</span><span class="pl-kos">(</span><span class="pl-s">'access-control-expose-headers'</span><span class="pl-kos">,</span> <span class="pl-s">'*'</span><span class="pl-kos">)</span>
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">set</span><span class="pl-kos">(</span><span class="pl-s">'access-control-allow-origin'</span><span class="pl-kos">,</span> <span class="pl-s">'*'</span><span class="pl-kos">)</span>
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">set</span><span class="pl-kos">(</span><span class="pl-s">'Cache-Control'</span><span class="pl-kos">,</span> <span class="pl-s">'max-age=1500'</span><span class="pl-kos">)</span>
+
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">delete</span><span class="pl-kos">(</span><span class="pl-s">'content-security-policy'</span><span class="pl-kos">)</span>
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">delete</span><span class="pl-kos">(</span><span class="pl-s">'content-security-policy-report-only'</span><span class="pl-kos">)</span>
+    <span class="pl-s1">resHdrNew</span><span class="pl-kos">.</span><span class="pl-en">delete</span><span class="pl-kos">(</span><span class="pl-s">'clear-site-data'</span><span class="pl-kos">)</span>
+
+    <span class="pl-k">return</span> <span class="pl-k">new</span> <span class="pl-v">Response</span><span class="pl-kos">(</span><span class="pl-s1">res</span><span class="pl-kos">.</span><span class="pl-c1">body</span><span class="pl-kos">,</span> <span class="pl-kos">{</span>
+        status<span class="pl-kos">,</span>
+        <span class="pl-c1">headers</span>: <span class="pl-s1">resHdrNew</span>
+    <span class="pl-kos">}</span><span class="pl-kos">)</span>
+<span class="pl-kos">}</span></pre></div></div>
+<div style="font-size:small;margin-top:8px;float:right;"></div>
+<button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
+<div class="comments" id="comments"></div>
+</div>
+    <div id="footer">Copyright © <span id="year"></span><a href="https://tiga210.github.io"> TIGA NOTE </a>
+<p>
+<span id="runday"></span>Powered by <a href="https://meekdai.com/Gmeek.html" target="_blank">Gmeek</a>
+</p>
+
+<script>
+if(""!=""){
+    var now=new Date();
+    var startSite=new Date("");
+    var diff=now.getTime()-startSite.getTime();
+    var diffDay=Math.floor(diff/(1000*60*60*24));
+    document.getElementById("year").innerHTML=now.getFullYear();
+    if(""!=""){document.getElementById("runday").innerHTML=" • "+"网站运行"+diffDay+"天"+" • ";}
+    else{document.getElementById("runday").innerHTML="网站运行"+diffDay+"天"+" • ";}
+}
+</script>
+</div>
+</body>
+<script>
+var IconList={'sun': 'M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM2.343 2.343a.75.75 0 011.061 0l1.06 1.061a.75.75 0 01-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zm9.193 9.193a.75.75 0 011.06 0l1.061 1.06a.75.75 0 01-1.06 1.061l-1.061-1.06a.75.75 0 010-1.061zM16 8a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 0116 8zM3 8a.75.75 0 01-.75.75H.75a.75.75 0 010-1.5h1.5A.75.75 0 013 8zm10.657-5.657a.75.75 0 010 1.061l-1.061 1.06a.75.75 0 11-1.06-1.06l1.06-1.06a.75.75 0 011.06 0zm-9.193 9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0z', 'moon': 'M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z', 'sync': 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z', 'home': 'M6.906.664a1.749 1.749 0 0 1 2.187 0l5.25 4.2c.415.332.657.835.657 1.367v7.019A1.75 1.75 0 0 1 13.25 15h-3.5a.75.75 0 0 1-.75-.75V9H7v5.25a.75.75 0 0 1-.75.75h-3.5A1.75 1.75 0 0 1 1 13.25V6.23c0-.531.242-1.034.657-1.366l5.25-4.2Zm1.25 1.171a.25.25 0 0 0-.312 0l-5.25 4.2a.25.25 0 0 0-.094.196v7.019c0 .138.112.25.25.25H5.5V8.25a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v5.25h2.75a.25.25 0 0 0 .25-.25V6.23a.25.25 0 0 0-.094-.195Z', 'github': 'M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z'};
+var utterancesLoad=0;
+
+let themeSettings={
+    "dark": ["dark","moon","#00f0ff","dark-blue"],
+    "light": ["light","sun","#ff5000","github-light"],
+    "auto": ["auto","sync","","preferred-color-scheme"]
+};
+function changeTheme(mode, icon, color, utheme){
+    document.documentElement.setAttribute("data-color-mode",mode);
+    document.getElementById("themeSwitch").setAttribute("d",value=IconList[icon]);
+    document.getElementById("themeSwitch").parentNode.style.color=color;
+    if(utterancesLoad==1){utterancesTheme(utheme);}
+}
+function modeSwitch(){
+    let currentMode=document.documentElement.getAttribute('data-color-mode');
+    let newMode = currentMode === "light" ? "dark" : currentMode === "dark" ? "auto" : "light";
+    localStorage.setItem("meek_theme", newMode);
+    if(themeSettings[newMode]){
+        changeTheme(...themeSettings[newMode]);
+    }
+}
+function utterancesTheme(theme){
+    const message={type:'set-theme',theme: theme};
+    const iframe=document.getElementsByClassName('utterances-frame')[0];
+    iframe.contentWindow.postMessage(message,'https://utteranc.es');
+}
+if(themeSettings[theme]){changeTheme(...themeSettings[theme]);}
+console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n\n","padding:5px 0;background:#02d81d;color:#fff");
+</script>
+
+<script>
+document.getElementById("pathHome").setAttribute("d",IconList["home"]);
+document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
+
+function openComments(){
+    cm=document.getElementById("comments");
+    cmButton=document.getElementById("cmButton");
+    cmButton.innerHTML="loading";
+    span=document.createElement("span");
+    span.setAttribute("class","AnimatedEllipsis");
+    cmButton.appendChild(span);
+
+    script=document.createElement("script");
+    script.setAttribute("src","https://utteranc.es/client.js");
+    script.setAttribute("repo","tiga210/tiga210.github.io");
+    script.setAttribute("issue-term","title");
+    
+    if(localStorage.getItem("meek_theme")=="dark"){script.setAttribute("theme","dark-blue");}
+    else if(localStorage.getItem("meek_theme")=="light") {script.setAttribute("theme","github-light");}
+    else{script.setAttribute("theme","preferred-color-scheme");}
+    
+    script.setAttribute("crossorigin","anonymous");
+    script.setAttribute("async","");
+    cm.appendChild(script);
+
+    int=self.setInterval("iFrameLoading()",200);
+}
+
+function iFrameLoading(){
+    var utterances=document.getElementsByClassName('utterances');
+    if(utterances.length==1){
+        if(utterances[0].style.height!=""){
+            utterancesLoad=1;
+            int=window.clearInterval(int);
+            document.getElementById("cmButton").style.display="none";
+            console.log("utterances Load OK");
+        }
+    }
+}
+</script>
+
+
+</html>
