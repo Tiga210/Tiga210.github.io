@@ -1,5 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>TIGA NOTE</title><link>https://tiga210.github.io</link><description>Tiga的个人笔记，分享记录一些有趣好玩的技术</description><copyright>TIGA NOTE</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://avatars.githubusercontent.com/u/10243912?v=4</url><title>avatar</title><link>https://tiga210.github.io</link></image><lastBuildDate>Thu, 20 Jun 2024 13:24:41 +0000</lastBuildDate><managingEditor>TIGA NOTE</managingEditor><ttl>60</ttl><webMaster>TIGA NOTE</webMaster><item><title>使用Cloudflare代理Docker hub</title><link>https://tiga210.github.io/post/shi-yong-Cloudflare-dai-li-Docker%20hub.html</link><description>由于国内的一些dockerhub镜像下线，导致无法访问，参考 [https://global.v2ex.com/t/1007922](https://global.v2ex.com/t/1007922) 成功使用cloudflare进行代理&#13;
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0"><channel><title>TIGA NOTE</title><link>https://tiga210.github.io</link><description>Tiga的个人笔记，分享记录一些有趣好玩的技术</description><copyright>TIGA NOTE</copyright><docs>http://www.rssboard.org/rss-specification</docs><generator>python-feedgen</generator><image><url>https://avatars.githubusercontent.com/u/10243912?v=4</url><title>avatar</title><link>https://tiga210.github.io</link></image><lastBuildDate>Thu, 20 Jun 2024 16:01:09 +0000</lastBuildDate><managingEditor>TIGA NOTE</managingEditor><ttl>60</ttl><webMaster>TIGA NOTE</webMaster><item><title>测试博客</title><link>https://tiga210.github.io/post/ce-shi-bo-ke.html</link><description># 测试博客
+
+测试博客。</description><guid isPermaLink="true">https://tiga210.github.io/post/ce-shi-bo-ke.html</guid><pubDate>Thu, 20 Jun 2024 13:29:09 +0000</pubDate></item><item><title>使用Cloudflare代理Docker hub</title><link>https://tiga210.github.io/post/shi-yong-Cloudflare-dai-li-Docker%20hub.html</link><description>由于国内的一些dockerhub镜像下线，导致无法访问，参考 [https://global.v2ex.com/t/1007922](https://global.v2ex.com/t/1007922) 成功使用cloudflare进行代理&#13;
 &#13;
 &#13;
 ```js&#13;
@@ -233,4 +235,4 @@ kuayu.tiga210.eu.org {&#13;
                 header_up Access-Control-Allow-Credentials true&#13;
         }&#13;
 }&#13;
-```。</description><guid isPermaLink="true">https://tiga210.github.io/post/Caddy-kua-yu-fang-wen-pei-zhi.html</guid><pubDate>Thu, 20 Jun 2024 05:47:02 +0000</pubDate></item><item><title>测试博客</title><link>https://tiga210.github.io/post/ce-shi-bo-ke.html</link><description>测试博客。</description><guid isPermaLink="true">https://tiga210.github.io/post/ce-shi-bo-ke.html</guid><pubDate>Thu, 20 Jun 2024 04:59:29 +0000</pubDate></item></channel></rss>
+```。</description><guid isPermaLink="true">https://tiga210.github.io/post/Caddy-kua-yu-fang-wen-pei-zhi.html</guid><pubDate>Thu, 20 Jun 2024 05:47:02 +0000</pubDate></item></channel></rss>

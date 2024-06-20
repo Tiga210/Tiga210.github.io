@@ -9,9 +9,13 @@
         let theme = localStorage.getItem("meek_theme") || "light";
         document.documentElement.setAttribute("data-color-mode", theme);
     </script>
-<meta name="description" content="测试博客。">
+<meta name="description" content="# 测试博客
+
+测试博客。">
 <meta property="og:title" content="测试博客">
-<meta property="og:description" content="测试博客。">
+<meta property="og:description" content="# 测试博客
+
+测试博客。">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://tiga210.github.io/post/ce-shi-bo-ke.html">
 <meta property="og:image" content="https://avatars.githubusercontent.com/u/10243912?v=4">
@@ -54,7 +58,7 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
         </svg>
     </a>
     
-    <a href="https://github.com/tiga210/tiga210.github.io/issues/1" target="_blank" class="btn btn-invisible circle" title="Issue">
+    <a href="https://github.com/tiga210/tiga210.github.io/issues/8" target="_blank" class="btn btn-invisible circle" title="Issue">
         <svg class="octicon" width="16" height="16">
             <path id="pathIssue" fill-rule="evenodd"></path>
         </svg>
@@ -70,7 +74,9 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 </div>
 </div>
     <div id="content">
-<div class="markdown-body" id="postBody"><p>测试博客</p></div>
+<div class="markdown-body" id="postBody"><h1>测试博客</h1>
+<p>测试博客。</p>
+<p><a href="https://blog.tiga210.eu.org/post/ce-shi-bo-ke.html" rel="nofollow">https://blog.tiga210.eu.org/post/ce-shi-bo-ke.html</a></p></div>
 <div style="font-size:small;margin-top:8px;float:right;"></div>
 <button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
 <div class="comments" id="comments"></div>
@@ -128,7 +134,11 @@ console.log("\n %c Gmeek last https://github.com/Meekdai/Gmeek \n\n","padding:5p
 <script>
 document.getElementById("pathHome").setAttribute("d",IconList["home"]);
 document.getElementById("pathIssue").setAttribute("d",IconList["github"]);
-
+cmButton=document.getElementById("cmButton");
+    span=document.createElement("span");
+    span.setAttribute("class","Counter");
+    span.innerHTML="2";
+    cmButton.appendChild(span);
 function openComments(){
     cm=document.getElementById("comments");
     cmButton=document.getElementById("cmButton");
