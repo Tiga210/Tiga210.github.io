@@ -9,9 +9,61 @@
         let theme = localStorage.getItem("meek_theme") || "light";
         document.documentElement.setAttribute("data-color-mode", theme);
     </script>
-<meta name="description" content="Caddy跨域访问配置。">
+<meta name="description" content="# Caddy跨域访问配置
+```
+kuayu.tiga210.eu.org {
+        header {
+                Access-Control-Allow-Origin *
+                Access-Control-Allow-Methods 'GET, POST, OPTIONS'
+                Access-Control-Allow-Headers 'Content-Type, Authorization'
+                Access-Control-Allow-Credentials true
+        }
+
+        # 处理 OPTIONS 预检请求
+        @preflight {
+                method OPTIONS
+        }
+        handle @preflight {
+                respond 'OK' 204
+        }
+
+        # 反向代理设置
+        reverse_proxy /* tg03:8080 {
+                header_up Access-Control-Allow-Origin *
+                header_up Access-Control-Allow-Methods 'GET, POST, OPTIONS'
+                header_up Access-Control-Allow-Headers 'Content-Type, Authorization'
+                header_up Access-Control-Allow-Credentials true
+        }
+}
+```。">
 <meta property="og:title" content="Caddy跨域访问">
-<meta property="og:description" content="Caddy跨域访问配置。">
+<meta property="og:description" content="# Caddy跨域访问配置
+```
+kuayu.tiga210.eu.org {
+        header {
+                Access-Control-Allow-Origin *
+                Access-Control-Allow-Methods 'GET, POST, OPTIONS'
+                Access-Control-Allow-Headers 'Content-Type, Authorization'
+                Access-Control-Allow-Credentials true
+        }
+
+        # 处理 OPTIONS 预检请求
+        @preflight {
+                method OPTIONS
+        }
+        handle @preflight {
+                respond 'OK' 204
+        }
+
+        # 反向代理设置
+        reverse_proxy /* tg03:8080 {
+                header_up Access-Control-Allow-Origin *
+                header_up Access-Control-Allow-Methods 'GET, POST, OPTIONS'
+                header_up Access-Control-Allow-Headers 'Content-Type, Authorization'
+                header_up Access-Control-Allow-Credentials true
+        }
+}
+```。">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://tiga210.github.io/post/Caddy-kua-yu-fang-wen.html">
 <meta property="og:image" content="https://avatars.githubusercontent.com/u/10243912?v=4">
@@ -70,7 +122,32 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
 </div>
 </div>
     <div id="content">
-<div class="markdown-body" id="postBody"><p>Caddy跨域访问配置</p></div>
+<div class="markdown-body" id="postBody"><h1>Caddy跨域访问配置</h1>
+<pre class="notranslate"><code class="notranslate">kuayu.tiga210.eu.org {
+        header {
+                Access-Control-Allow-Origin *
+                Access-Control-Allow-Methods "GET, POST, OPTIONS"
+                Access-Control-Allow-Headers "Content-Type, Authorization"
+                Access-Control-Allow-Credentials true
+        }
+
+        # 处理 OPTIONS 预检请求
+        @preflight {
+                method OPTIONS
+        }
+        handle @preflight {
+                respond "OK" 204
+        }
+
+        # 反向代理设置
+        reverse_proxy /* tg03:8080 {
+                header_up Access-Control-Allow-Origin *
+                header_up Access-Control-Allow-Methods "GET, POST, OPTIONS"
+                header_up Access-Control-Allow-Headers "Content-Type, Authorization"
+                header_up Access-Control-Allow-Credentials true
+        }
+}
+</code></pre></div>
 <div style="font-size:small;margin-top:8px;float:right;"></div>
 <button class="btn btn-block" type="button" onclick="openComments()" id="cmButton">评论</button>
 <div class="comments" id="comments"></div>
