@@ -14,10 +14,10 @@
 
 ```js
 'use strict'
-
+const workers_url = 'https://你自己的域名'
 const hub_host = 'registry-1.docker.io'
 const auth_url = 'https://auth.docker.io'
-const workers_url = 'https://dh.tiga210.eu.org'
+
 /**
  * static files (404.html, sw.js, conf.js)
  */
@@ -225,10 +225,10 @@ async function proxy(urlObj, reqInit, rawLen) {
 
 ```js
 'use strict'
-
+const workers_url = 'https://你自己的域名'
 const hub_host = 'registry-1.docker.io'
 const auth_url = 'https://auth.docker.io'
-const workers_url = 'https://dh.tiga210.eu.org'
+
 /**
  * static files (404.html, sw.js, conf.js)
  */
@@ -490,10 +490,10 @@ body{box-sizing: border-box;min-width: 200px;max-width: 900px;margin: 20px auto;
     <div id="content">
 <div class="markdown-body" id="postBody"><p>由于国内的一些dockerhub镜像下线，导致无法访问，参考 <a href="https://global.v2ex.com/t/1007922" rel="nofollow">https://global.v2ex.com/t/1007922</a> 成功使用cloudflare进行代理</p>
 <div class="highlight highlight-source-js"><pre class="notranslate"><span class="pl-s">'use strict'</span>
-
+<span class="pl-k">const</span> <span class="pl-s1">workers_url</span> <span class="pl-c1">=</span> <span class="pl-s">'https://你自己的域名'</span>
 <span class="pl-k">const</span> <span class="pl-s1">hub_host</span> <span class="pl-c1">=</span> <span class="pl-s">'registry-1.docker.io'</span>
 <span class="pl-k">const</span> <span class="pl-s1">auth_url</span> <span class="pl-c1">=</span> <span class="pl-s">'https://auth.docker.io'</span>
-<span class="pl-k">const</span> <span class="pl-s1">workers_url</span> <span class="pl-c1">=</span> <span class="pl-s">'https://dh.tiga210.eu.org'</span>
+
 <span class="pl-c">/**</span>
 <span class="pl-c"> * static files (404.html, sw.js, conf.js)</span>
 <span class="pl-c"> */</span>

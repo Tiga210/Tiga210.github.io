@@ -3,10 +3,10 @@
 
 ```js
 'use strict'
-
+const workers_url = 'https://你自己的域名'
 const hub_host = 'registry-1.docker.io'
 const auth_url = 'https://auth.docker.io'
-const workers_url = 'https://dh.tiga210.eu.org'
+
 /**
  * static files (404.html, sw.js, conf.js)
  */
