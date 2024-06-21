@@ -1,5 +1,5 @@
 ```
-kuayu.tiga210.eu.org {
+域名 {
         header {
                 Access-Control-Allow-Origin *
                 Access-Control-Allow-Methods "GET, POST, OPTIONS"
